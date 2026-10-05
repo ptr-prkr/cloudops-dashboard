@@ -1,10 +1,10 @@
 # CloudOps Dashboard
 
-A full-stack operations dashboard built with **React, TypeScript, Node.js and Express**, containerised with **Docker** and served through an **nginx reverse proxy**.
+A full-stack operations dashboard built with **React, TypeScript, Node.js and Express**, containerised with **Docker**, served through an **nginx reverse proxy**, and deployed to **AWS using Terraform and Ansible**.
 
-The project combines software engineering with DevOps and infrastructure principles. A React frontend consumes live operational data from a typed REST API, while the backend collects system and service-health information and exposes deployment and infrastructure metadata.
+The project combines software engineering, DevOps, infrastructure as code and cloud engineering. A React frontend consumes live operational data from a typed REST API, while the backend collects system and service-health information and exposes deployment and infrastructure metadata.
 
-The application supports both a local development architecture and a production-style multi-container deployment using Docker Compose.
+The application supports local development, a production-style multi-container deployment on Linux, and an automated AWS deployment.
 
 ![CloudOps Dashboard](screenshots/01-cloudops-dashboard.png)
 
@@ -23,7 +23,7 @@ CloudOps Dashboard provides a single operational view of:
 
 The React application automatically requests fresh operational data every 10 seconds.
 
-The project was designed not only to display infrastructure information, but also to demonstrate how application development, monitoring, containerisation, networking and deployment configuration can work together in a complete system.
+The project was designed not only to display infrastructure information, but also to demonstrate how application development, monitoring, containerisation, infrastructure as code, configuration management, networking and cloud deployment can work together in a complete system.
 
 ## Technology Stack
 
@@ -55,12 +55,18 @@ The project was designed not only to display infrastructure information, but als
 - nginx
 - Docker bridge networking
 - Container health checks
+- Terraform
+- Ansible
+- AWS
+- Amazon EC2
+- Amazon VPC
+- IAM
+- Security Groups
 - Git
-- AWS deployment planned
 
 ## Architecture
 
-The project supports two execution modes.
+The project supports three execution models: local development, local containerised deployment and AWS production deployment.
 
 ### Development Architecture
 
@@ -94,7 +100,7 @@ rather than hard-coding a backend hostname or port into the React application.
 
 ### Containerised Architecture
 
-The production-style deployment uses separate frontend and backend containers connected through a private Docker bridge network.
+The production-style local deployment uses separate frontend and backend containers connected through a private Docker bridge network.
 
 ```text
 Browser
@@ -121,13 +127,45 @@ Only the nginx frontend is published to the host:
 Host :8080 -> frontend :80
 ```
 
-The backend port is not published to the host. nginx reaches the Express service through Docker's internal network using the Compose service name:
+The backend port is not published to the host. nginx reaches the Express service through Docker's internal DNS using:
 
 ```text
 backend:5000
 ```
 
 This keeps the API behind the application's reverse proxy rather than exposing it directly.
+
+### AWS Architecture
+
+The cloud deployment extends the same container architecture into AWS.
+
+```text
+Internet
+   |
+   | HTTP :80
+   v
+AWS Security Group
+   |
+   v
+EC2 - Ubuntu 24.04
+   |
+   v
+Docker Compose
+   |
+   +---------------------------+
+   |                           |
+   v                           v
+Frontend Container        Backend Container
+nginx :80                 Express :5000
+React production build    TypeScript API
+   |                           ^
+   | /api/*                    |
+   +------ Docker network -----+
+```
+
+Terraform provisions the AWS infrastructure, while Ansible configures the EC2 operating system and deploys the application.
+
+The public entry point is nginx on port 80. The Express backend remains private and is accessible only through the Docker network.
 
 ## TypeScript Data Contract
 
@@ -292,11 +330,7 @@ nginx performs two roles in the containerised deployment:
 - serves the compiled React application
 - proxies `/api/*` requests to the backend container
 
-The browser therefore communicates with one application entry point:
-
-```text
-http://host:8080
-```
+The browser communicates with one application entry point.
 
 A frontend request such as:
 
@@ -326,8 +360,6 @@ nginx also exposes a lightweight `/health` endpoint used by container health mon
 
 Docker Compose defines the complete containerised application.
 
-The stack contains:
-
 ```text
 cloudops-dashboard
 |
@@ -335,7 +367,7 @@ cloudops-dashboard
 │   ├── nginx
 │   ├── React production build
 │   ├── health check
-│   └── host port 8080
+│   └── configurable published port
 │
 ├── backend
 │   ├── Node.js
@@ -356,7 +388,16 @@ Compose provides:
 - service dependencies
 - health checks
 - restart policies
-- port publishing
+- configurable port publishing
+
+The frontend host port is environment-driven:
+
+```yaml
+ports:
+  - "${FRONTEND_PORT:-8080}:80"
+```
+
+This allows the same Compose configuration to use port `8080` locally and port `80` on AWS.
 
 The complete stack can be built and started with:
 
@@ -404,9 +445,12 @@ INSTANCE_NAME
 NETWORK_NAME
 MONITORING_MODE
 FRONTEND_HEALTH_URL
+FRONTEND_PORT
 ```
 
-The current containerised deployment reports:
+This allows the same application and container architecture to represent different environments.
+
+### Local Container Deployment
 
 | Property | Value |
 | --- | --- |
@@ -418,15 +462,25 @@ The current containerised deployment reports:
 | Instance | `node01` |
 | Network | `cloudops-network` |
 
-This allows the same application image to be configured for different deployment environments without modifying application source code.
+### AWS Deployment
+
+| Property | Value |
+| --- | --- |
+| Environment | `production` |
+| Version | `1.0.0` |
+| Deployment method | `ansible` |
+| Provider | `AWS` |
+| Region | `eu-west-2` |
+| Instance | `cloudops-dashboard-ec2` |
+| Network | `cloudops-network` |
 
 ## Containerised Production Dashboard
 
-The complete React, nginx and Express stack was deployed through Docker Compose and validated through the nginx entry point.
+The complete React, nginx and Express stack was first deployed locally through Docker Compose and validated through the nginx entry point.
 
 ![Containerised production dashboard](screenshots/04-containerised-production-dashboard.png)
 
-The dashboard confirms:
+The local container deployment confirms:
 
 - production environment configuration
 - Docker infrastructure metadata
@@ -450,7 +504,7 @@ After nginx was restarted, the dashboard automatically detected its recovery.
 
 ### Container Backend Failure
 
-The backend container was also deliberately stopped while the frontend container remained running.
+The backend container was deliberately stopped while the frontend container remained running.
 
 nginx continued serving the compiled React application, but API requests could no longer reach Express.
 
@@ -498,6 +552,205 @@ Dashboard recovers
 
 This demonstrates the difference between frontend availability, backend availability and complete application availability.
 
+## AWS Infrastructure with Terraform
+
+The AWS infrastructure is defined as code using Terraform.
+
+Terraform provisions:
+
+- VPC
+- public subnet
+- Internet Gateway
+- public route table
+- route-table association
+- Security Group
+- EC2 SSH key pair
+- IAM role
+- IAM instance profile
+- Ubuntu EC2 instance
+- encrypted `gp3` root volume
+
+The deployment uses AWS region:
+
+```text
+eu-west-2
+```
+
+The EC2 instance is deployed into a dedicated VPC and public subnet.
+
+### EC2 Security
+
+The EC2 configuration includes:
+
+- encrypted root storage
+- IMDSv2 enforcement
+- IAM instance profile
+- controlled Security Group ingress
+- SSH public-key authentication
+
+The Security Group permits:
+
+```text
+HTTP :80    -> public application access
+SSH  :22    -> configurable administrator CIDR
+```
+
+There is deliberately no inbound Security Group rule for the Express backend on port `5000`.
+
+Terraform was validated after deployment with:
+
+```text
+No changes. Your infrastructure matches the configuration.
+```
+
+This confirms that the deployed AWS resources matched the Terraform configuration at the final validation point.
+
+## Automated Deployment with Ansible
+
+Terraform is responsible for creating the infrastructure.
+
+Ansible is responsible for configuring the EC2 operating system and deploying CloudOps Dashboard onto that infrastructure.
+
+```text
+Terraform
+    |
+    v
+AWS infrastructure
+    |
+    v
+Ubuntu EC2
+    |
+    v
+Ansible
+    |
+    +-- install Docker
+    +-- install Docker Compose
+    +-- synchronise application source
+    +-- configure deployment metadata
+    +-- configure public port
+    +-- build Docker images
+    +-- start containers
+    +-- verify HTTP health
+    +-- verify dashboard API
+```
+
+Application source is synchronised to EC2 while generated development content such as `node_modules` and `dist` is excluded.
+
+Docker then installs and builds the required application dependencies inside the appropriate image build stages.
+
+The completed Ansible deployment reported:
+
+```text
+unreachable=0
+failed=0
+```
+
+and verified:
+
+```text
+HTTP health status: 200
+Dashboard status: operational
+Environment: production
+Provider: AWS
+```
+
+## AWS Production Deployment
+
+The complete application was successfully deployed to AWS EC2 using the Terraform-created infrastructure and Ansible configuration.
+
+![CloudOps Dashboard running on AWS](screenshots/06-aws-production-deployment.png)
+
+The live dashboard reported:
+
+- environment: `production`
+- provider: `AWS`
+- region: `eu-west-2`
+- instance: `cloudops-dashboard-ec2`
+- deployment method: `ansible`
+- frontend: operational
+- API: operational
+
+### AWS Deployment Validation
+
+The deployment was validated with:
+
+- EC2 system status checks
+- EC2 instance status checks
+- SSH connectivity
+- Ansible connectivity
+- Ansible deployment with zero failed tasks
+- Docker frontend health check
+- Docker backend health check
+- public `/health` request returning HTTP `200`
+- live `/api/dashboard` request
+- public port `5000` connectivity test
+- Security Group inspection
+- Terraform configuration-drift check
+
+The public backend test confirmed:
+
+```text
+PASS: backend is NOT publicly reachable on :5000
+```
+
+The final Terraform plan confirmed:
+
+```text
+No changes. Your infrastructure matches the configuration.
+```
+
+## Security and Deployment Decisions
+
+Several implementation decisions were made deliberately to reduce unnecessary exposure and keep the architecture closer to production practices.
+
+### Private Backend
+
+The Express backend is not published directly to the host or internet.
+
+API traffic enters through nginx and travels to Express across the private Docker bridge network.
+
+### Restricted SSH
+
+SSH was initially enabled during infrastructure provisioning and then restricted to a configurable administrator `/32` CIDR.
+
+The real administrator address is supplied through an untracked local Terraform variable file rather than being committed to the repository.
+
+### Public HTTP Entry Point
+
+Port 80 is intentionally publicly accessible so the demonstration application can be reached through nginx.
+
+The current deployment uses HTTP rather than HTTPS. TLS termination and certificate management are outside the scope of this implementation.
+
+### Non-Root Backend
+
+The production backend container runs as the standard non-root Node.js user rather than root.
+
+### No Docker Socket in Container Mode
+
+The host-mode backend can inspect the Docker Engine through its Unix socket.
+
+The containerised backend does not mount `/var/run/docker.sock`.
+
+A Docker socket mount would give the application significant control over the host Docker daemon, so container mode instead uses network-based service health checks.
+
+### IMDSv2
+
+The EC2 instance requires IMDSv2 for access to the EC2 Instance Metadata Service.
+
+### Encrypted Storage
+
+The EC2 root volume uses encrypted `gp3` storage.
+
+### IAM Instance Profile
+
+The EC2 instance is associated with an IAM role through an instance profile, providing an AWS-native mechanism for granting instance permissions if required without embedding credentials in the application.
+
+### Environment-Based Deployment Metadata
+
+Deployment-specific values are supplied through environment variables rather than being embedded in application source code.
+
+These decisions reduce unnecessary host exposure and make the application easier to move between environments.
+
 ## Development
 
 ### Backend
@@ -534,7 +787,7 @@ http://localhost:5173
 
 During development, Vite proxies `/api/*` requests to the Express backend.
 
-## Containerised Deployment
+## Local Containerised Deployment
 
 Build and start the complete application:
 
@@ -566,13 +819,53 @@ Stop the application:
 docker compose down
 ```
 
-The containerised application is exposed on:
+The local containerised application defaults to:
 
 ```text
 http://localhost:8080
 ```
 
 The backend remains internal to the Docker network and does not require a published host port.
+
+## AWS Deployment Workflow
+
+The cloud deployment follows this sequence:
+
+```text
+Terraform
+   |
+   | terraform init
+   | terraform plan
+   | terraform apply
+   v
+AWS infrastructure
+   |
+   v
+Ansible
+   |
+   | connectivity test
+   | deploy.yml
+   v
+Docker Compose on EC2
+   |
+   v
+nginx / React / Express
+   |
+   v
+Health and security validation
+```
+
+Terraform outputs the EC2 connection information required to generate the temporary Ansible inventory.
+
+The generated inventory and environment-specific Terraform variable file are excluded from Git.
+
+After portfolio validation, the AWS resources can be removed with:
+
+```bash
+terraform destroy
+```
+
+This keeps the demonstration reproducible without requiring the infrastructure to remain permanently provisioned.
 
 ## Quality Checks
 
@@ -598,10 +891,21 @@ The Compose configuration can be validated with:
 docker compose config --quiet
 ```
 
-Runtime health can be verified with:
+Terraform can be validated with:
 
 ```bash
-docker compose ps
+terraform -chdir=terraform fmt -check
+terraform -chdir=terraform validate
+terraform -chdir=terraform plan
+```
+
+The Ansible deployment can be syntax checked with:
+
+```bash
+ansible-playbook \
+  -i ansible/inventory.ini \
+  ansible/deploy.yml \
+  --syntax-check
 ```
 
 The project has been tested with:
@@ -619,6 +923,16 @@ The project has been tested with:
 - private backend networking
 - deliberate service failure
 - recovery testing
+- Terraform validation
+- Terraform planning and deployment
+- Terraform drift detection
+- Ansible connectivity
+- automated Ansible deployment
+- EC2 status checks
+- AWS public HTTP access
+- AWS Security Group validation
+- restricted SSH access
+- public backend exposure testing
 
 ## Project Structure
 
@@ -648,90 +962,38 @@ cloudops-dashboard/
 │   ├── nginx.conf
 │   └── package.json
 │
+├── terraform/
+│   ├── .terraform.lock.hcl
+│   ├── main.tf
+│   ├── outputs.tf
+│   ├── terraform.tfvars.example
+│   ├── variables.tf
+│   └── versions.tf
+│
+├── ansible/
+│   ├── ansible.cfg
+│   └── deploy.yml
+│
 ├── screenshots/
 │   ├── 01-cloudops-dashboard.png
 │   ├── 02-broken-services-with-terminal.png
 │   ├── 03-live-api-monitoring-data.png
 │   ├── 04-containerised-production-dashboard.png
-│   └── 05-backend-failure-502-handling.png
+│   ├── 05-backend-failure-502-handling.png
+│   └── 06-aws-production-deployment.png
 │
 ├── docker-compose.yml
 ├── .gitignore
 └── README.md
 ```
 
-## Security and Deployment Decisions
-
-Several implementation decisions were made deliberately to keep the deployment architecture closer to real production practices.
-
-### Private Backend
-
-The Express backend is not published directly to the host. API traffic enters through nginx and travels to the backend across the private Docker bridge network.
-
-### Non-Root Backend
-
-The production backend container runs as the standard non-root Node.js user rather than root.
-
-### No Docker Socket in Container Mode
-
-The host-mode backend can inspect the Docker Engine through its Unix socket.
-
-The containerised backend does not mount `/var/run/docker.sock`.
-
-A Docker socket mount would give the application significant control over the host Docker daemon, so container mode instead uses network-based service health checks.
-
-### Environment-Based Deployment Metadata
-
-Deployment-specific values are supplied through environment variables rather than being embedded in application source code.
-
-These decisions reduce unnecessary host exposure and make the application easier to move between environments.
-
-## Deployment Roadmap
-
-The local application and containerisation stages are complete.
-
-The next stage will extend the same application into AWS infrastructure, including:
-
-```text
-Internet
-   |
-   v
-DNS
-   |
-   v
-AWS networking
-   |
-   v
-EC2
-   |
-   v
-Docker Compose
-   |
-   +-- nginx / React
-   |
-   +-- Express API
-```
-
-Planned AWS work includes:
-
-- VPC networking
-- public subnet
-- routing
-- Internet Gateway
-- Security Groups
-- IAM
-- EC2
-- DNS
-- cloud security configuration
-- production deployment validation
-
-The application and infrastructure documentation will continue to be updated as each cloud layer is implemented and tested.
+Generated or environment-specific deployment files such as `terraform.tfvars`, Terraform plan files and the generated Ansible inventory are intentionally excluded from version control.
 
 ## What This Project Demonstrates
 
-CloudOps Dashboard combines software development, systems engineering and DevOps practices in one practical project.
+CloudOps Dashboard combines software development, systems engineering, DevOps and cloud infrastructure in one practical project.
 
-It currently demonstrates:
+It demonstrates:
 
 - React component architecture
 - TypeScript interfaces and type safety
@@ -752,15 +1014,27 @@ It currently demonstrates:
 - private Docker networking
 - Docker internal DNS
 - container health checks
-- non-root container execution
+- non-root backend execution
 - environment-driven configuration
 - service dependency management
 - production build validation
 - deliberate failure testing
+- Terraform infrastructure as code
+- AWS VPC networking
+- EC2 provisioning
+- Security Group configuration
+- IAM roles and instance profiles
+- encrypted EC2 storage
+- IMDSv2 enforcement
+- Ansible configuration management
+- automated application deployment
+- infrastructure drift validation
+- cloud security validation
+- controlled infrastructure teardown
 - infrastructure-oriented application design
 
-The next phase extends the same application into AWS networking, compute, IAM, security and DNS.
+The project demonstrates the complete path from frontend and API development through containerisation, automated infrastructure provisioning, server configuration and deployment to a live AWS environment.
 
 ---
 
-**CloudOps Dashboard** — React · TypeScript · Node.js · Express · Docker · Docker Compose · nginx · Linux · AWS
+**CloudOps Dashboard** — React · TypeScript · Node.js · Express · Docker · Docker Compose · nginx · Linux · Terraform · Ansible · AWS
