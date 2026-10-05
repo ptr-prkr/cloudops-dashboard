@@ -13,6 +13,8 @@ const execFileAsync = promisify(execFile)
 const deploymentTimestamp =
   process.env.DEPLOYED_AT ?? new Date().toISOString()
 
+const monitoringMode = process.env.MONITORING_MODE ?? 'host'
+
 function bytesToGiB(bytes: number): number {
   return Number((bytes / 1024 ** 3).toFixed(2))
 }
@@ -94,7 +96,6 @@ function checkDocker(): Promise<ServiceHealth> {
   })
 }
 
-
 async function checkNginx(): Promise<ServiceHealth> {
   const startedAt = performance.now()
 
@@ -125,32 +126,51 @@ async function checkNginx(): Promise<ServiceHealth> {
   }
 }
 
-function getOverallStatus(services: ServiceHealth[]): ServiceStatus {
-  if (services.some((service) => service.status === 'offline')) {
-    return 'degraded'
-  }
-
-  if (services.some((service) => service.status === 'degraded')) {
+function getOverallStatus(
+  services: ServiceHealth[],
+): ServiceStatus {
+  if (
+    services.some(
+      (service) =>
+        service.status === 'offline' ||
+        service.status === 'degraded',
+    )
+  ) {
     return 'degraded'
   }
 
   return 'operational'
 }
 
-export async function getDashboardData(): Promise<DashboardData> {
-  const totalMemory = os.totalmem()
-  const freeMemory = os.freemem()
+async function getServiceHealth(): Promise<ServiceHealth[]> {
+  const frontendHealthUrl =
+    process.env.FRONTEND_HEALTH_URL ??
+    'http://127.0.0.1:5173'
 
-  const services = await Promise.all([
-    checkHttpService('Frontend', 'http://127.0.0.1:5173'),
+  const commonServices: Promise<ServiceHealth>[] = [
+    checkHttpService('Frontend', frontendHealthUrl),
     Promise.resolve({
       name: 'API',
       status: 'operational' as const,
       responseTime: 1,
     }),
+  ]
+
+  if (monitoringMode === 'container') {
+    return Promise.all(commonServices)
+  }
+
+  return Promise.all([
+    ...commonServices,
     checkDocker(),
     checkNginx(),
   ])
+}
+
+export async function getDashboardData(): Promise<DashboardData> {
+  const totalMemory = os.totalmem()
+  const freeMemory = os.freemem()
+  const services = await getServiceHealth()
 
   return {
     status: getOverallStatus(services),
@@ -165,17 +185,26 @@ export async function getDashboardData(): Promise<DashboardData> {
     },
 
     deployment: {
-      environment: 'development',
+      environment:
+  process.env.APP_ENVIRONMENT === 'production'
+    ? 'production'
+    : process.env.APP_ENVIRONMENT === 'staging'
+      ? 'staging'
+      : 'development',
       version: process.env.APP_VERSION ?? '1.0.0',
       deployedAt: deploymentTimestamp,
-      deployedBy: process.env.DEPLOYED_BY ?? 'local-development',
+      deployedBy:
+        process.env.DEPLOYED_BY ?? 'local-development',
     },
 
     infrastructure: {
-      provider: process.env.CLOUD_PROVIDER ?? 'on-premises',
+      provider:
+        process.env.CLOUD_PROVIDER ?? 'on-premises',
       region: process.env.CLOUD_REGION ?? 'local',
-      instance: os.hostname(),
-      network: 'local-network',
+      instance:
+        process.env.INSTANCE_NAME ?? os.hostname(),
+      network:
+        process.env.NETWORK_NAME ?? 'local-network',
     },
 
     services,

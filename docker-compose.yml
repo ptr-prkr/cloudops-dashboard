@@ -1,0 +1,57 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    image: cloudops-backend:1.0.0
+    container_name: cloudops-backend
+    environment:
+      PORT: "5000"
+      MONITORING_MODE: container
+      FRONTEND_HEALTH_URL: http://frontend/health
+      APP_ENVIRONMENT: production
+      APP_VERSION: "1.0.0"
+      DEPLOYED_BY: docker-compose
+      CLOUD_PROVIDER: docker
+      CLOUD_REGION: local
+      INSTANCE_NAME: node01
+      NETWORK_NAME: cloudops-network
+    networks:
+      - cloudops-network
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:5000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: cloudops-frontend:1.0.0
+    container_name: cloudops-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - cloudops-network
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q --spider http://127.0.0.1/health || exit 1"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+networks:
+  cloudops-network:
+    name: cloudops-network
+    driver: bridge
